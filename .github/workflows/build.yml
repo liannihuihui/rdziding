@@ -1,1 +1,60 @@
+name: Build RustDesk Ultimate
 
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        required: true
+        type: choice
+        options:
+        - windows
+        - linux
+      version:
+        required: true
+      api_server:
+        required: true
+      id_server:
+        required: true
+      relay_server:
+        required: false
+      key:
+        required: true
+      custom_id:
+        required: true
+      password:
+        required: true
+      hide_tray:
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install deps
+        run: pip install requests
+      - name: Generate Package
+        env:
+          OS: ${{ inputs.os }}
+          VERSION: ${{ inputs.version }}
+          API_SERVER: ${{ inputs.api_server }}
+          ID_SERVER: ${{ inputs.id_server }}
+          RELAY_SERVER: ${{ inputs.relay_server }}
+          KEY: ${{ inputs.key }}
+          CUSTOM_ID: ${{ inputs.custom_id }}
+          PASSWORD: ${{ inputs.password }}
+          HIDE_TRAY: ${{ inputs.hide_tray }}
+        run: |
+          python scripts/builder.py
+          echo "FILE=$(cat artifact_* | cut -d'=' -f2)" >> $GITHUB_ENV
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: rustdesk-custom
+          path: ${{ env.FILE }}
+          retention-days: 2
