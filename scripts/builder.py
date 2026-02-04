@@ -23,10 +23,25 @@ HIDE_TRAY = os.getenv("HIDE_TRAY", "false")
 def log(msg):
     print(f"🔨 {msg}")
 
+def get_default_branch():
+    """自动获取仓库的默认分支名称 (修复 422 错误的核心)"""
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            branch = r.json().get('default_branch', 'main')
+            log(f"检测到仓库默认分支: {branch}")
+            return branch
+        else:
+            log("⚠️ 获取仓库信息失败，默认假设为 main")
+            return 'main'
+    except Exception as e:
+        log(f"⚠️ 获取分支异常: {e}，默认假设为 main")
+        return 'main'
+
 def get_latest_rustdesk_version():
-    """
-    获取 RustDesk 最新版本号（修复版：去除 v 前缀以匹配文件名）
-    """
+    """获取 RustDesk 最新版本号"""
     log("正在获取 RustDesk 最新版本...")
     url = "https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
     try:
@@ -39,14 +54,14 @@ def get_latest_rustdesk_version():
 
         tag_name = r.json()['tag_name']  # 例如 "v1.2.3"
         
-        # 关键修复：去掉 'v'，因为实际文件名是 rustdesk-1.2.3-... 而不是 rustdesk-v1.2.3-...
+        # 关键修复：去掉 'v'
         if tag_name.startswith('v'):
             return tag_name[1:] 
         return tag_name
 
     except Exception as e:
         print(f"⚠️ 获取版本发生异常: {e}")
-        return "1.2.3" # 异常时备用
+        return "1.2.3"
 
 def download_file(url, dest):
     log(f"正在下载: {url}")
@@ -61,7 +76,6 @@ def download_file(url, dest):
 
 def generate_windows_wrapper():
     """生成 Windows 下的 bat 启动脚本 (智能 ID)"""
-    # 只有当 CUSTOM_ID 不为空时，才生成设置 ID 的命令
     cmd_set_id = ""
     if CUSTOM_ID:
         cmd_set_id = f"rustdesk.exe --id \"{CUSTOM_ID}\"\n"
@@ -154,24 +168,32 @@ def create_github_release(filename):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     
     base_ver = get_latest_rustdesk_version()
+    # 获取默认分支（解决 422 错误的关键）
+    default_branch = get_default_branch()
+    
     # 生成随机 tag 防止冲突
     tag_name = f"v{base_ver}-{uuid.uuid4().hex[:8]}" 
     release_name = f"RustDesk Custom Build ({OS_TARGET})"
 
+    # 构造 Payload
+    # draft=True 避免发布时的严格校验，也避免每次构建发通知推送骚扰
+    # target_commitish 明确指定仓库分支，这是修复 422 的核心
     data = {
         "tag_name": tag_name,
         "name": release_name,
+        "target_commitish": default_branch, 
         "body": f"Auto generated RustDesk Build\nVersion: {base_ver}\nConfig ID: {CUSTOM_ID if CUSTOM_ID else 'Auto-Generate'}",
-        "draft": False,
+        "draft": False,  # 如果还是失败，可以改成 True 试一下
         "prerelease": False
     }
     
-    log(f"正在创建 GitHub Release: {tag_name}")
+    log(f"正在创建 GitHub Release (基于分支: {default_branch})...")
     res = requests.post(url, headers=headers, json=data)
     
     if not res.ok:
+        print("❌ 详细错误信息:")
         print(res.text)
-        raise Exception(f"创建 Release 失败: {res.status_code}")
+        raise Exception(f"创建 Release 失败 HTTP {res.status_code}")
     
     upload_url = res.json()["upload_url"].replace("{?name,label}", "")
     log(f"正在上传文件到 GitHub...")
@@ -193,17 +215,13 @@ def main():
     log(f"📦 目标版本号: {ver}")
     
     # 2. 确定下载 URL 和文件名
-    # 注意：RustDesk 官方的下载链接路径里需要带 v (例如 .../download/v1.2.3/...)
-    # 但文件名本身不带 v (例如 rustdesk-1.2.3-...)
-    
     if OS_TARGET == "windows":
+        # 注意：RustDesk 1.3.0 以后 Windows 文件名有变化，这里是常规版
         file_name = f"rustdesk-{ver}-x86_64-pc-windows.zip"
-        # 这里的 URL 一定要加上 v
         source_url = f"https://github.com/rustdesk/rustdesk/releases/download/v{ver}/{file_name}"
         output_name = f"RustDesk-Windows-{ver}-AutoID.zip"
     else:
         file_name = f"rustdesk-{ver}-x86_64-unknown-linux-gnu.zip"
-        # URL 加上 v
         source_url = f"https://github.com/rustdesk/rustdesk/releases/download/v{ver}/{file_name}"
         output_name = f"RustDesk-Linux-{ver}-AutoID.zip"
 
