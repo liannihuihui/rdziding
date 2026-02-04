@@ -4,6 +4,7 @@ import zipfile
 import shutil
 import requests
 import uuid
+import json
 
 # --- 配置部分 ---
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -24,7 +25,7 @@ def log(msg):
     print(f"🔨 {msg}")
 
 def get_default_branch():
-    """自动获取仓库的默认分支名称 (修复 422 错误的核心)"""
+    """自动获取仓库的默认分支名称"""
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     try:
@@ -168,7 +169,6 @@ def create_github_release(filename):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     
     base_ver = get_latest_rustdesk_version()
-    # 获取默认分支（解决 422 错误的关键）
     default_branch = get_default_branch()
     
     # 生成随机 tag 防止冲突
@@ -176,21 +176,30 @@ def create_github_release(filename):
     release_name = f"RustDesk Custom Build ({OS_TARGET})"
 
     # 构造 Payload
-    # draft=True 避免发布时的严格校验，也避免每次构建发通知推送骚扰
-    # target_commitish 明确指定仓库分支，这是修复 422 的核心
+    # 修改：移除 target_commitish，让 GitHub 自动使用默认分支。
+    # 有时显式指定分支会导致 422（例如分支是空的或者权限问题）。
     data = {
         "tag_name": tag_name,
         "name": release_name,
-        "target_commitish": default_branch, 
+        # "target_commitish": default_branch,  <-- 这里注释掉试试
         "body": f"Auto generated RustDesk Build\nVersion: {base_ver}\nConfig ID: {CUSTOM_ID if CUSTOM_ID else 'Auto-Generate'}",
-        "draft": False,  # 如果还是失败，可以改成 True 试一下
+        "draft": False,
         "prerelease": False
     }
     
-    log(f"正在创建 GitHub Release (基于分支: {default_branch})...")
+    log(f"正在创建 GitHub Release (Tag: {tag_name})...")
     res = requests.post(url, headers=headers, json=data)
     
     if not res.ok:
+        # 新增：把错误信息写入文件
+        try:
+            error_detail = res.json()
+            with open("error_log.json", "w") as f:
+                json.dump(error_detail, f, indent=4)
+            log("❌ 详细错误已保存到 error_log.json，请查看文件内容。")
+        except:
+            pass
+            
         print("❌ 详细错误信息:")
         print(res.text)
         raise Exception(f"创建 Release 失败 HTTP {res.status_code}")
@@ -204,6 +213,7 @@ def create_github_release(filename):
         
     if upload_res.ok:
         print(f"✅ 构建完成！下载地址: {res.json()['html_url']}")
+        print(f"文件名: {filename}")
     else:
         raise Exception("上传文件失败")
 
@@ -216,7 +226,6 @@ def main():
     
     # 2. 确定下载 URL 和文件名
     if OS_TARGET == "windows":
-        # 注意：RustDesk 1.3.0 以后 Windows 文件名有变化，这里是常规版
         file_name = f"rustdesk-{ver}-x86_64-pc-windows.zip"
         source_url = f"https://github.com/rustdesk/rustdesk/releases/download/v{ver}/{file_name}"
         output_name = f"RustDesk-Windows-{ver}-AutoID.zip"
@@ -235,7 +244,6 @@ def main():
         download_file(source_url, file_name)
     except Exception as e:
         log(f"❌ 下载 {file_name} 失败！")
-        log(f"💡 这通常是因为版本 {ver} 尚未发布到官方，或者网络问题。")
         raise
 
     # 4. 注入配置
