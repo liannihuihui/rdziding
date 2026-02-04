@@ -20,9 +20,9 @@ on:
       key:
         required: true
       custom_id:
-        required: false  # ✅ 修改：改为 false，允许为空
+        required: false
       password:
-        required: false  # ✅ 修改：改为 false，因为 python 有默认值
+        required: false
       hide_tray:
         required: false
         type: string
@@ -36,13 +36,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      # 更新 checkout 到 v4
+      - uses: actions/checkout@v4
+      
       - name: Setup Python
-        uses: actions/setup-python@v4
+        # 更新 setup-python 到 v5
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          
       - name: Install deps
         run: pip install requests
+        
       - name: Generate Package
         env:
           OS_TARGET: ${{ inputs.os }}
@@ -61,8 +66,10 @@ jobs:
         run: |
           python scripts/builder.py
           echo "FILE=$(cat artifact_* | cut -d'=' -f2)" >> $GITHUB_ENV
+          
       - name: Upload
-        uses: actions/upload-artifact@v3
+        # 🚑 核心修复：必须使用 v4，否则被GitHub拦截
+        uses: actions/upload-artifact@v4
         with:
           name: rustdesk-custom
           path: ${{ env.FILE }}
