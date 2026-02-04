@@ -24,8 +24,14 @@ on:
       password:
         required: true
       hide_tray:
-        type: boolean
-        default: true
+        required: false
+        type: string
+        default: 'true'
+      # 下面这个参数是必须加的，因为你的 JS 前端代码发送了这个参数，如果 YAML 没定义，GitHub 会报 422
+      auto_update_check:
+        required: false
+        type: string
+        default: 'false'
 
 jobs:
   build:
@@ -40,7 +46,8 @@ jobs:
         run: pip install requests
       - name: Generate Package
         env:
-          OS: ${{ inputs.os }}
+          # 这里必须改名为 OS_TARGET，因为你的 builder.py 里写的是 OS_TARGET
+          OS_TARGET: ${{ inputs.os }}
           VERSION: ${{ inputs.version }}
           API_SERVER: ${{ inputs.api_server }}
           ID_SERVER: ${{ inputs.id_server }}
@@ -49,6 +56,12 @@ jobs:
           CUSTOM_ID: ${{ inputs.custom_id }}
           PASSWORD: ${{ inputs.password }}
           HIDE_TRAY: ${{ inputs.hide_tray }}
+          # 传给 Python 脚本（虽然脚本里目前没用这个参数，但传过去无妨）
+          AUTO_UPDATE_CHECK: ${{ inputs.auto_update_check }}
+          # 这些是 Python 脚本里运行 GitHub API 需要的环境变量
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           python scripts/builder.py
           echo "FILE=$(cat artifact_* | cut -d'=' -f2)" >> $GITHUB_ENV
